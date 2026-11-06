@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="si">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flappy Parrot - Ultimate Edition</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Iskoola Pota', sans-serif;
+            overflow: hidden;
+        }
+        #gameCanvas {
+            border: 3px solid #fff;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="gameCanvas" width="320" height="480"></canvas>
+
+<script>
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+let frames = 0;
+let score = 0;
+let coins = parseInt(localStorage.getItem("flappyCoins")) || 0;
+let distance = 0;
+let bestScore = parseInt(localStorage.getItem("flappyBest")) || 0;
+let gameState = "START"; 
+let playerName = localStorage.getItem("flappyName") || "abcdEFGH12";
+let hasRevived = false;
+
+// Audio & Mute State
+let soundMuted = false;
+
+// Weather & Environment State
+let isNightMode = false;
+let shieldActive = false;
+let shieldTimer = 0;
+let rainParticles = [];
+for (let i = 0; i < 40; i++) {
+    rainParticles.push({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        l: Math.random() * 10 + 5,
+        xs: Math.random() * 2 - 1,
+        ys: Math.random() * 10 + 10
+    });
+}
+
+// Daily Quests System
+let dailyQuestCompleted = localStorage.getItem("flappyQuestDone") === "true";
+let dailyQuestProgress = parseInt(localStorage.getItem("flappyQuestProg")) || 0;
+const QUEST_TARGET = 20;
+
+// Skins: 0: Old Parrot (Normal), 1: Silver, 2: Gold
+let selectedSkin = parseInt(localStorage.getItem("flappySkin")) || 0;
+let unlockedSkins = JSON.parse(localStorage.getItem("flappyUnlocks")) || [true, false, false];
+
+// Daily Reward System variables (24 Hours Countdown)
+let lastRewardTime = parseInt(localStorage.getItem("flappyLastReward")) || 0;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Real Battery status variable
+let batteryLevelNum = 100;
+let batteryLevel = "100%";
+if (navigator.getBattery) {
+    navigator.getBattery().then(function(battery) {
+        function updateBattery() {
+            batteryLevelNum = Math.round(battery.level * 100);
+            batteryLevel = batteryLevelNum + "%";
+        }
+        updateBattery();
+        battery.addEventListener('levelchange', updateBattery);
+    });
+}
+
+// Audio Setup
+const jumpSound = new Audio('jump.mp3');
+const failSound = new Audio('africa-crying-laugh-commercial.mp3'); 
+const bgMusic = new Audio('originalbgm.mp3');
+bgMusic.loop = true;
+
+// Web Audio API Synthesizer
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playCoinSound() {
+    if (soundMuted) return;
+    try {
+        let osc = audioCtx.createOscillator();
+        let gain = audioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+    } catch(e){}
+}
+function playShieldSound() {
+    if (soundMuted) return;
+    try {
+        let osc = audioCtx.createOscillator();
+        let gain = audioCtx.createGain();
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(300, audioCtx.currentTime);
+        osc.frequency.linearRampToValueAtTime(600, audioCtx.currentTime + 0.2);
+        gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.2);
+    } catch(e){}
+}
+
+// Images Setup
+const bgImg = new Image();
+bgImg.src = 'bg.jpg';
+
+const parrotImgs = [
+    new Image(),
+    new Image(),
+    new Image()
+];
+parrotImgs[0].src = 'parrot.png';
+parrotImgs[1].src = 'sliver paroot.png';
+parrotImgs[2].src = 'gold parrot.png';
+
+const paddyImg = new Image();
+paddyImg.src = 'paddy.png';
+
+const coinImg = new Image();
+coinImg.src = 'coin.png';
+
+const rewardBoxImg = new Image();
+rewardBoxImg.src = 'rewardbox.png';
+
+const goldPotImg = new Image();
+goldPotImg.src = 'gold pot.png';
+
+const homeTabImg = new Image();
+homeTabImg.src = 'home tab.png';
+
+const parrot = {
+    x: 50,
+    y: 150,
+    w: 34,
+    h: 26,
+    gravity: 0.25,
+    jump: 4.6,
+    velocity: 0,
+    rotation: 0,
+    draw: function() {
+        ctx.save();
+        ctx.translate(this.x + this.w/2, this.y + this.h/2);
+        
+        if(this.velocity < 0) {
+            this.rotation = -0.35;
+        } else {
+            this.rotation = Math.min(Math.PI/2, this.rotation + 0.08);
+        }
+        ctx.rotate(this.rotation);
+        
+        let currentImg = parrotImgs[selectedSkin];
+        ctx.drawImage(currentImg, -this.w/2, -this.h/2, this.w, this.h);
+        
+        if (shieldActive) {
+            ctx.beginPath();
+            ctx.arc(0, 0, 24, 0, Math.PI * 2);
+            ctx.strokeStyle = "rgba(0, 229, 255, 0.8)";
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            ctx.fillStyle = "rgba(0, 229, 255, 0.2)";
+            ctx.fill();
+        }
+        
+        ctx.restore();
+    },
+    flap: function() {
+        this.velocity = -this.jump;
+        if (!soundMuted) jumpSound.play();
+    },
+    update: function() {
+        if (gameState === "PLAY") {
+            this.velocity += this.gravity;
+            this.y += this.velocity;
+
+            if (shieldTimer > 0) {
+                shieldTimer--;
+                if (shieldTimer <= 0) shieldActive = false;
+            }
+
+            if (this.y + this.h >= canvas.height - 40) {
+                this.y = canvas.height - 40 - this.h;
+                if (!shieldActive) triggerGameOver();
+            }
+            if (this.y <= 0) {
+                this.y = 0;
+            }
+        }
+    }
+};
+
+const pipes = [];
+const items = [];
+
+function spawnPipe() {
+    if (frames % 100 === 0 && gameState === "PLAY") {
+        let topH = Math.floor(Math.random() * (180 - 60)) + 60;
+        let gap = 120;
+        pipes.push({
+            x: canvas.width,
+            top: topH,
+            bottom: canvas.height - (topH + gap) - 40,
+            collected: false
+        });
+
+        let randType = Math.random();
+        let itemType = randType < 0.08 ? "SHIELD" : (score > 10 ? "COIN" : "PADDY");
+
+        items.push({
+            x: canvas.width + 25,
+            y: topH + gap / 2,
+            type: itemType,
+            collected: false,
+            angle: 0
+        });
+    }
+}
+
+function updatePipes() {
+    let speed = 2 + Math.floor(score / 15) * 0.5; // ලකුණු 15න් 15ට වේගය වැඩි වේ
+    for (let i = pipes.length - 1; i >= 0; i--) {
+        let p = pipes[i];
+        p.x -= speed;
+
+        if (p.x + 50 < 0) {
+            pipes.splice(i, 1);
+        }
+
+        if (parrot.x + parrot.w - 5 > p.x && parrot.x + 5 < p.x + 50) {
+            if (parrot.y + 4 < p.top || parrot.y + parrot.h - 4 > canvas.height - p.bottom - 40) {
+                if (shieldActive) {
+                    shieldActive = false;
+                    shieldTimer = 0;
+                    pipes.splice(i, 1);
+                    playShieldSound();
+                } else {
+                    triggerGameOver();
+                }
+            }
+        }
+
+        if (p.x + 50 < parrot.x && !p.collected) {
+            score++;
+            distance += 1;
+            
+            if (!dailyQuestCompleted && score > dailyQuestProgress) {
+                dailyQuestProgress = score;
+                localStorage.setItem("flappyQuestProg", dailyQuestProgress);
+                if (dailyQuestProgress >= QUEST_TARGET) {
+                    dailyQuestCompleted = true;
+                    localStorage.setItem("flappyQuestDone", "true");
+                    coins += 20;
+                    localStorage.setItem("flappyCoins", coins);
+                    alert("සුභ පැතුම්! දෛනික මෙහෙයුම (Daily Quest) සාර්ථකයි! අමතර Coins 20 ක් ලැබුණි!");
+                }
+            }
+
+            if(score > bestScore) {
+                bestScore = score;
+                localStorage.setItem("flappyBest", bestScore);
+            }
+            p.collected = true;
+        }
+    }
+
+    for (let j = items.length - 1; j >= 0; j--) {
+        let item = items[j];
+        item.x -= speed;
+        item.angle += 0.1; 
+        
+        if(item.x + 30 < 0) {
+            items.splice(j, 1);
+            continue;
+        }
+
+        let px = parrot.x + parrot.w/2;
+        let py = parrot.y + parrot.h/2;
+        if(px > item.x - 15 && px < item.x + 25 && py > item.y - 15 && py < item.y + 25 && !item.collected) {
+            item.collected = true;
+            if (item.type === "SHIELD") {
+                shieldActive = true;
+                shieldTimer = 300;
+                playShieldSound();
+            } else if (item.type === "COIN") {
+                coins += 5;
+                playCoinSound();
+            } else {
+                coins += 1;
+                playCoinSound();
+            }
+            localStorage.setItem("flappyCoins", coins);
+            items.splice(j, 1);
+        }
+    }
+}
+
+function drawPipes() {
+    for (let i = 0; i < pipes.length; i++) {
+        let p = pipes[i];
+        let pipeColor = score >= 30 ? "#d97706" : (score >= 15 ? "#0284c7" : (isNightMode ? "#3b6e17" : "#73bf2e"));
+        ctx.fillStyle = pipeColor;
+        ctx.fillRect(p.x, 0, 50, p.top);
+        ctx.strokeStyle = "#222";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(p.x, 0, 50, p.top);
+
+        ctx.fillRect(p.x, canvas.height - p.bottom - 40, 50, p.bottom + 40);
+        ctx.strokeRect(p.x, canvas.height - p.bottom - 40, 50, p.bottom + 40);
+    }
+
+    for (let j = 0; j < items.length; j++) {
+        let item = items[j];
+        if(!item.collected) {
+            ctx.save();
+            ctx.translate(item.x, item.y);
+            
+            if (item.type === "SHIELD") {
+                ctx.beginPath();
+                ctx.arc(0, 0, 12, 0, Math.PI * 2);
+                ctx.fillStyle = "#00e5ff";
+                ctx.fill();
+                ctx.fillStyle = "#FFF";
+                ctx.font = "bold 10px sans-serif";
+                ctx.fillText("🛡️", -7, 4);
+            } else if(item.type === "COIN") {
+                let scaleX = Math.cos(item.angle);
+                ctx.scale(scaleX, 1);
+                ctx.drawImage(coinImg, -12, -12, 24, 24);
+            } else {
+                ctx.drawImage(paddyImg, -12, -12, 24, 24);
+                ctx.fillStyle = "#FFF";
+                ctx.font = "bold 10px sans-serif";
+                ctx.fillText("paddy", -15, -16);
+            }
+            ctx.restore();
+        }
+    }
+}
+
+function drawRain() {
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i < rainParticles.length; i++) {
+        let p = rainParticles[i];
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x + p.xs, p.y + p.l);
+        ctx.stroke();
+
+        p.x += p.xs;
+        p.y += p.ys;
+        if (p.x > canvas.width || p.y > canvas.height) {
+            p.x = Math.random() * canvas.width;
+            p.y = -20;
+        }
+    }
+}
+
+function triggerGameOver() {
+    if(gameState !== "GAMEOVER") {
+        gameState = "GAMEOVER";
+        shieldActive = false;
+        bgMusic.pause();
+        if (!soundMuted) failSound.play();
+    }
+}
+
+function resetGame() {
+    parrot.y = 150;
+    parrot.velocity = 0;
+    parrot.rotation = 0;
+    pipes.length = 0;
+    items.length = 0;
+    score = 0;
+    distance = 0;
+    shieldActive = false;
+    shieldTimer = 0;
+    gameState = "PLAY";
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+    if (!soundMuted) bgMusic.play();
+}
+
+// Google Ads Integration Bridge Functions
+function showRewardedAd(callback) {
+    if (window.Android && window.Android.showRewardedAd) {
+        window.Android.showRewardedAd();
+        if (callback) callback();
+    } else if (window.webintoapp && window.webintoapp.showAd) {
+        window.webintoapp.showAd();
+        if (callback) callback();
+    } else {
+        gameState = "REWARD_AD";
+        setTimeout(() => {
+            if(callback) callback();
+            gameState = "START";
+        }, 2000);
+    }
+}
+
+function showGoldPotAd() {
+    gameState = "GOLD_POT_AD";
+    let timeLeft = 3; 
+    let timer = setInterval(() => {
+        timeLeft--;
+        if(timeLeft <= 0) {
+            clearInterval(timer);
+            let earned = Math.random() < 0.5 ? 1 : 2; 
+            coins += earned;
+            localStorage.setItem("flappyCoins", coins);
+            alert("සුභ පැතුම්! ඔබට Gold Pot එකෙන් Coins " + earned + " ක් ලැබුණි!");
+            gameState = "START";
+        }
+    }, 1000);
+}
+
+canvas.addEventListener("click", function(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    if (clickX >= 10 && clickX <= 60 && clickY >= 430 && clickY <= 475) {
+        gameState = "START";
+        return;
+    }
+
+    if (gameState === "START") {
+        if (clickX >= 270 && clickX <= 305 && clickY >= 12 && clickY <= 42) {
+            soundMuted = !soundMuted;
+            if (soundMuted) bgMusic.pause();
+            else bgMusic.play();
+            return;
+        }
+
+        if (clickX >= 185 && clickX <= 215 && clickY >= 12 && clickY <= 42) {
+            isNightMode = !isNightMode;
+            return;
+        }
+
+        if (clickX >= 10 && clickX <= 180 && clickY >= 12 && clickY <= 42) {
+            let newName = prompt("නම ඇතුළත් කරන්න (English අකුරු 8ක් සහ අංක 2ක් පමණි - උදා: abcdEFGH12):", playerName);
+            if(newName) {
+                let regex = /^[a-zA-Z]{8}\d{2}$/;
+                if(regex.test(newName)) {
+                    playerName = newName;
+                    localStorage.setItem("flappyName", playerName);
+                } else {
+                    alert("කරුණාකර හරියටම English අකුරු 8ක් සහ අංක 2ක් පමණක් ඇතුළත් කරන්න!");
+                }
+            }
+            return;
+        }
+        if (clickX >= 220 && clickX <= 265 && clickY >= 12 && clickY <= 60) {
+            let now = Date.now();
+            if (now - lastRewardTime >= DAY_MS) {
+                lastRewardTime = now;
+                localStorage.setItem("flappyLastReward", lastRewardTime);
+                coins += 10;
+                localStorage.setItem("flappyCoins", coins);
+                alert("සුභ පැතුම්! ඔබට දිනපතා ත්‍යාගය ලෙස Coins 10 ක් ලැබුණි!");
+            } else {
+                alert("තවමත් පැය 24 පිරී නැත!");
+            }
+            return;
+        }
+        if (clickX >= 60 && clickX <= 260 && clickY >= 320 && clickY <= 360) {
+            gameState = "SHOP";
+            return;
+        }
+        if (clickX >= 135 && clickX <= 185 && clickY >= 370 && clickY <= 420) {
+            showGoldPotAd();
+            return;
+        }
+        resetGame();
+    } 
+    else if (gameState === "SHOP") {
+        if (clickX >= 40 && clickX <= 280 && clickY >= 75 && clickY <= 127) {
+            selectedSkin = 0;
+            localStorage.setItem("flappySkin", selectedSkin);
+        }
+        else if (clickX >= 40 && clickX <= 280 && clickY >= 135 && clickY <= 187) {
+            if (unlockedSkins[1]) {
+                selectedSkin = 1;
+                localStorage.setItem("flappySkin", selectedSkin);
+            } else if (coins >= 50) {
+                if (confirm("Coins 50 ගෙවී Silver Parrot මිලදී ගැනීමට අවශ්‍යද?")) {
+                    coins -= 50;
+                    unlockedSkins[1] = true;
+                    selectedSkin = 1;
+                    localStorage.setItem("flappyCoins", coins);
+                    localStorage.setItem("flappyUnlocks", JSON.stringify(unlockedSkins));
+                    localStorage.setItem("flappySkin", selectedSkin);
+                }
+            } else {
+                alert("ප්‍රමාණවත් Coins නැත!");
+            }
+        }
+        else if (clickX >= 40 && clickX <= 280 && clickY >= 195 && clickY <= 247) {
+            if (unlockedSkins[2]) {
+                selectedSkin = 2;
+                localStorage.setItem("flappySkin", selectedSkin);
+            } else if (coins >= 120) {
+                if (confirm("Coins 120 ගෙවී Gold Parrot මිලදී ගැනීමට අවශ්‍යද?")) {
+                    coins -= 120;
+                    unlockedSkins[2] = true;
+                    selectedSkin = 2;
+                    localStorage.setItem("flappyCoins", coins);
+                    localStorage.setItem("flappyUnlocks", JSON.stringify(unlockedSkins));
+                    localStorage.setItem("flappySkin", selectedSkin);
+                }
+            } else {
+                alert("ප්‍රමාණවත් Coins නැත!");
+            }
+        }
+        else if (clickX >= 60 && clickX <= 260 && clickY >= 275 && clickY <= 311) {
+            gameState = "START";
+        }
+        return;
+    }
+    else if (gameState === "PLAY") {
+        parrot.flap();
+    } 
+    else if (gameState === "GAMEOVER") {
+        if (!hasRevived && clickX >= 60 && clickX <= 260 && clickY >= 215 && clickY <= 249) {
+            showRewardedAd(() => {
+                hasRevived = true;
+                parrot.y = 150;
+                parrot.velocity = 0;
+                pipes.length = 0;
+                gameState = "PLAY";
+                if (!soundMuted) bgMusic.play();
+            });
+            return;
+        }
+        if (clickX >= 60 && clickX <= 260 && clickY >= 260 && clickY <= 298) {
+            hasRevived = false;
+            resetGame();
+            return;
+        }
+    }
+});
+
+window.addEventListener("keydown", function(e) {
+    if (e.code === "Space") {
+        if (gameState === "START" || gameState === "GAMEOVER") {
+            hasRevived = false;
+            resetGame();
+        } else if (gameState === "PLAY") {
+            parrot.flap();
+        }
+    }
+});
+
+function loop() {
+    ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
+
+    if (isNightMode) {
+        ctx.fillStyle = "rgba(10, 20, 50, 0.65)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    drawRain();
+
+    if (gameState === "PLAY" || gameState === "GAMEOVER") {
+        spawnPipe();
+        updatePipes();
+        drawPipes();
+    }
+
+    parrot.update();
+    parrot.draw();
+
+    ctx.fillStyle = "#ded895";
+    ctx.fillRect(0, canvas.height - 40, canvas.width, 40);
+    ctx.fillStyle = score >= 30 ? "#d97706" : (score >= 15 ? "#0284c7" : "#73bf2e");
+    ctx.fillRect(0, canvas.height - 40, canvas.width, 10);
+
+    ctx.drawImage(homeTabImg, 10, 432, 50, 36);
+
+    ctx.fillStyle = "#FF0000";
+    ctx.font = "bold 12px sans-serif";
+    ctx.fillText(batteryLevel, canvas.width - 85, 442);
+    ctx.font = "bold 9px sans-serif";
+    ctx.fillText("Battery Life", canvas.width - 92, 456);
+
+    let bx = canvas.width - 45;
+    let by = 442;
+    ctx.strokeStyle = "#FF0000";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(bx, by, 18, 9);
+    ctx.fillRect(bx + 18, by + 2.5, 2, 4);
+    let fillW = (batteryLevelNum / 100) * 14;
+    ctx.fillStyle = "#FF0000";
+    ctx.fillRect(bx + 2, by + 2, fillW, 5);
+
+    if(gameState === "PLAY") {
+        ctx.fillStyle = "#FFF";
+        ctx.font = "bold 22px 'Iskoola Pota', sans-serif";
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = "#000";
+        ctx.strokeText("Score: " + score, 15, 30);
+        ctx.fillText("Score: " + score, 15, 30);
+
+        ctx.strokeText("Coins: " + coins, 15, 60);
+        ctx.fillText("Coins: " + coins, 15, 60);
+
+        ctx.strokeText("Distance: " + distance + "m", 15, 90);
+        ctx.fillText("Distance: " + distance + "m", 15, 90);
+
+        if (shieldActive) {
+            ctx.fillStyle = "#00e5ff";
+            ctx.font = "bold 14px sans-serif";
+            ctx.fillText("🛡️ SHIELD ACTIVE!", 15, 115);
+        }
+    }
+
+    if (gameState === "START") {
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(10, 12, 170, 30);
+        ctx.fillStyle = "#FFF";
+        ctx.font = "bold 15px 'Iskoola Pota', sans-serif";
+        ctx.fillText("👤 " + playerName + " ✏️", 18, 32);
+
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(185, 12, 30, 30);
+        ctx.font = "16px sans-serif";
+        ctx.fillText(isNightMode ? "🌙" : "☀️", 191, 33);
+
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(270, 12, 35, 30);
+        ctx.font = "14px sans-serif";
+        ctx.fillText(soundMuted ? "🔇" : "🔊", 277, 33);
+
+        let dateObj = new Date();
+        let timeString = dateObj.toLocaleTimeString();
+        ctx.fillStyle = "#FFD700";
+        ctx.font = "bold 16px sans-serif";
+        ctx.fillText("🕒 " + timeString, 10, 60);
+
+        ctx.fillStyle = "#FFF";
+        ctx.font = "bold 12px sans-serif";
+        let badge = "🥉 Beginner";
+        if (bestScore >= 50) badge = "🥇 Master Bird";
+        else if (bestScore >= 20) badge = "🥈 Pro Parrot";
+        ctx.fillText("Badge: " + badge, 10, 80);
+
+        let questStatusText = dailyQuestCompleted ? "✅ Quest Done!" : ("🎯 Quest: " + dailyQuestProgress + "/" + QUEST_TARGET);
+        ctx.fillText(questStatusText, 10, 98);
+
+        if (batteryLevelNum <= 15) {
+            ctx.fillStyle = "#000000";
+            ctx.font = "bold 13px sans-serif";
+            ctx.fillText("Low battery! Please charge phone.", 65, 175);
+            ctx.fillStyle = "#FF0000";
+            ctx.font = "bold 12px sans-serif";
+            ctx.fillText("Battery Life", 130, 195);
+        }
+
+        ctx.drawImage(rewardBoxImg, 220, 15, 45, 45);
+        ctx.fillStyle = "#FFD700";
+        ctx.font = "bold 9px sans-serif";
+        let now = Date.now();
+        let diff = DAY_MS - (now - lastRewardTime);
+        if (diff < 0) diff = 0;
+        let hours = Math.floor(diff / (1000 * 60 * 60));
+        let minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        let seconds = Math.floor((diff % (1000 * 60)) / 1000);
+        let countdownStr = hours + "h " + minutes + "m " + seconds + "s";
+        ctx.fillText(diff === 0 ? "🎁 Ready!" : "⏳ " + countdownStr, 215, 10);
+
+        ctx.fillStyle = "#FFCC00";
+        ctx.font = "bold 32px sans-serif";
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = "#000";
+        ctx.strokeText("FLAPPY PARROT", 25, 125);
+        ctx.fillText("FLAPPY PARROT", 25, 125);
+
+        ctx.fillStyle = "#FFF";
+        ctx.font = "bold 16px sans-serif";
+        ctx.fillText("Coins: " + coins, 120, 155);
+
+        ctx.fillStyle = "#4CAF50";
+        ctx.fillRect(60, 320, 200, 40);
+        ctx.strokeStyle = "#2E7D32";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(60, 320, 200, 40);
+        ctx.fillStyle = "#FFF";
+        ctx.font = "bold 16px sans-serif";
+        ctx.fillText("🔑 Keypacks (Shop)", 85, 345);
+
+        ctx.drawImage(goldPotImg, 135, 370, 50, 50);
+
+        ctx.fillStyle = "#000";
+        ctx.font = "bold 15px sans-serif";
+        ctx.fillText("ක්‍රීඩා කිරීමට Screen එක ඔබන්න", 35, canvas.height / 2 + 30);
+    }
+
+    if (gameState === "SHOP") {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = "#FFD700";
+        ctx.font = "bold 18px 'Iskoola Pota', sans-serif";
+        ctx.fillText("🔑 Keypacks - Parrot Shop", 45, 35);
+        ctx.font = "bold 14px sans-serif";
+        ctx.fillText("Coins: " + coins, 125, 58);
+
+        ctx.fillStyle = selectedSkin === 0 ? "#1b5e20" : "#333";
+        ctx.fillRect(40, 75, 240, 52);
+        ctx.drawImage(parrotImgs[0], 50, 83, 36, 36);
+        ctx.fillStyle = "#FFF";
+        ctx.font = "bold 12px sans-serif";
+        ctx.fillText("Old Parrot", 95, 98);
+        ctx.fillStyle = "#FFD700";
+        ctx.fillText(selectedSkin === 0 ? "Selected" : "Default", 95, 118);
+
+        ctx.fillStyle = selectedSkin === 1 ? "#1b5e20" : "#333";
+        ctx.fillRect(40, 135, 240, 52);
+        ctx.drawImage(parrotImgs[1], 50, 143, 36, 36);
+        ctx.fillStyle = "#FFF";
+        ctx.font = "bold 12px sans-serif";
+        ctx.fillText("Silver Parrot", 95, 158);
+        ctx.fillStyle = "#FFD700";
+        ctx.fillText(unlockedSkins[1] ? (selectedSkin === 1 ? "Selected" : "Unlocked (Select)") : "50 Coins", 95, 178);
+
+        ctx.fillStyle = selectedSkin === 2 ? "#1b5e20" : "#333";
+        ctx.fillRect(40, 195, 240, 52);
+        ctx.drawImage(parrotImgs[2], 50, 203, 36, 36);
+        ctx.fillStyle = "#FFF";
+        ctx.font = "bold 12px sans-serif";
+        ctx.fillText("Gold Parrot", 95, 218);
+        ctx.fillStyle = "#FFD700";
+        ctx.fillText(unlockedSkins[2] ? (selectedSkin === 2 ? "Selected" : "Unlocked (Select)") : "120 Coins", 95, 238);
+
+        ctx.fillStyle = "#D32F2F";
+        ctx.fillRect(60, 275, 200, 36);
+        ctx.fillStyle = "#FFF";
+        ctx.font = "bold 14px sans-serif";
+        ctx.fillText("🔙 ආපසු (Back)", 110, 298);
+    }
+
+    if (gameState === "REWARD_AD" || gameState === "GOLD_POT_AD") {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#FFD700";
+        ctx.font = "bold 20px 'Iskoola Pota', sans-serif";
+        ctx.fillText("📺 දැන්වීම වාදනය වේ (30s)...", 35, canvas.height / 2 - 20);
+    }
+
+    if (gameState === "GAMEOVER") {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = "#FF0000";
+        ctx.font = "bold 22px 'Iskoola Pota', sans-serif";
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = "#FFF";
+        ctx.strokeText("අයියෝ මල්ලී මේම නම් බෑ", 35, 60);
+        ctx.fillText("අයියෝ මල්ලී මේම නම් බෑ", 35, 60);
+
+        ctx.fillStyle = "#deb887";
+        ctx.fillRect(60, 75, 200, 105);
+        ctx.strokeStyle = "#8b4513";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(60, 75, 200, 105);
+
+        ctx.fillStyle = "#553311";
+        ctx.font = "bold 13px 'Iskoola Pota', sans-serif";
+        ctx.fillText("ලකුණු (Score): " + score, 80, 100);
+        ctx.fillText("දුර (Distance): " + distance + "m", 80, 125);
+        ctx.fillText("වැඩිම ලකුණු: " + bestScore, 80, 152);
+
+        let dateObj = new Date();
+        let timeString = dateObj.toLocaleTimeString();
+        ctx.fillStyle = "#FFD700";
+        ctx.font = "bold 16px sans-serif";
+        ctx.fillText("🕒 " + timeString, 100, 200);
+
+        if (!hasRevived) {
+            ctx.fillStyle = "#ff9800";
+            ctx.fillRect(60, 215, 200, 34);
+            ctx.strokeStyle = "#e65100";
+            ctx.strokeRect(60, 215, 200, 34);
+            ctx.fillStyle = "#FFF";
+            ctx.font = "bold 13px 'Iskoola Pota', sans-serif";
+            ctx.fillText("📺 Watch Ad & Revive", 80, 237);
+        }
+
+        ctx.fillStyle = "#4CAF50";
+        ctx.fillRect(60, 260, 200, 38);
+        ctx.strokeStyle = "#2E7D32";
+        ctx.strokeRect(60, 260, 200, 38);
+        ctx.fillStyle = "#FFF";
+        ctx.font = "bold 14px sans-serif";
+        ctx.fillText("🔄 නැවත ක්‍රීඩා කරන්න (Play)", 72, 285);
+    }
+
+    frames++;
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
